@@ -128,7 +128,7 @@ class HED(nn.Module):
         return crop1_margin, crop2_margin, crop3_margin, crop4_margin, crop5_margin
 
     def forward(self, x):
-        # VGG-16 network.
+        # VGG-16 network. Here you put non-linear,
         image_h, image_w = x.shape[2], x.shape[3]
         conv1_1 = self.relu(self.conv1_1(x))
         conv1_2 = self.relu(self.conv1_2(conv1_1))  # Side output 1.

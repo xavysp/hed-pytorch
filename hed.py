@@ -13,23 +13,28 @@ from collections import defaultdict
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from os.path import join, isdir, abspath, dirname
+import matplotlib.pyplot as plt
+from tensorboardX import SummaryWriter
+import cv2 as cv
 
 # Customized import.
 from networks import HED
 from datasets import BsdsDataset
 from utils import Logger, AverageMeter, \
-    load_checkpoint, save_checkpoint, load_vgg16_caffe, load_pretrained_caffe
+    load_checkpoint, save_checkpoint, load_vgg16_caffe, load_pretrained_caffe,visualize_result, \
+    image_normalization
 
-
-# Parse arguments.
+# FIG = plt.figure()
+pt_writer = SummaryWriter()
 parser = argparse.ArgumentParser(description='HED training.')
 # 1. Actions.
-parser.add_argument('--test',             default=False,             help='Only test the model.', action='store_true')
+parser.add_argument('--test',             default=True, help='Only test the model.', action='store_true')
+parser.add_argument('--model_name', default='HED', type=str)
 # 2. Counts.
 parser.add_argument('--train_batch_size', default=1,    type=int,   metavar='N', help='Training batch size.')
 parser.add_argument('--test_batch_size',  default=1,    type=int,   metavar='N', help='Test batch size.')
 parser.add_argument('--train_iter_size',  default=10,   type=int,   metavar='N', help='Training iteration size.')
-parser.add_argument('--max_epoch',        default=40,   type=int,   metavar='N', help='Total epochs.')
+parser.add_argument('--max_epoch',        default=25,   type=int,   metavar='N', help='Total epochs.')
 parser.add_argument('--print_freq',       default=500,  type=int,   metavar='N', help='Print frequency.')
 # 3. Optimizer settings.
 parser.add_argument('--lr',               default=1e-6, type=float, metavar='F', help='Initial learning rate.')
@@ -40,26 +45,35 @@ parser.add_argument('--lr_gamma',         default=0.1,  type=float, metavar='F',
 parser.add_argument('--momentum',         default=0.9,  type=float, metavar='F', help='Momentum.')
 parser.add_argument('--weight_decay',     default=2e-4, type=float, metavar='F', help='Weight decay.')
 # 4. Files and folders.
-parser.add_argument('--vgg16_caffe',      default='',                help='Resume VGG-16 Caffe parameters.')
-parser.add_argument('--checkpoint',       default='',                help='Resume the checkpoint.')
+parser.add_argument('--train_list', default='train_pair.lst', type=str)  # SSMIHD: train_rgb_pair.lst
+parser.add_argument('--test_list', default='test_pair.lst', type=str)  # SSMIHD:vis_test.lst
+parser.add_argument('--vgg16_caffe',      default='data/5stage-vgg.py36pickle',help='Resume VGG-16 Caffe parameters.')
+parser.add_argument('--checkpoint',       default='/opt/results/ssmihd_hed/epoch-22-checkpoint.pt',
+                    help='Resume the checkpoint.') # prev '', curr /opt/results/ssmihd_hed/epoch-22-checkpoint.pt
 parser.add_argument('--caffe_model',      default='',                help='Resume HED Caffe model.')
-parser.add_argument('--output',           default='./output',        help='Output folder.')
-parser.add_argument('--dataset',          default='./data/HED-BSDS', help='HED-BSDS dataset folder.')
+parser.add_argument('--output',           default='/opt/results',        help='Output folder.')
+parser.add_argument('--train_dataset',           default='SSMIHD',        help='dataset name')
+parser.add_argument('--test_dataset',           default='DCD',        help='dataset name')
+parser.add_argument('--dataset',          default='/opt/dataset', help='HED-BSDS dataset folder.')
 # 5. Others.
 parser.add_argument('--cpu',              default=False,             help='Enable CPU mode.', action='store_true')
+parser.add_argument('--channels_swap', default=[2, 1, 0], type=int)
+parser.add_argument('--mean_pixel_values', default=[103.939, 116.779, 123.68, 137.86],
+                    type=float)  # [103.939,116.779,123.68]
+
 args = parser.parse_args()
 
 # Set device.
 device = torch.device('cpu' if args.cpu else 'cuda')
 
-
-def main():
+def main(args=None):
     ################################################
     # I. Miscellaneous.
     ################################################
     # Create the output directory.
+
     current_dir = abspath(dirname(__file__))
-    output_dir = join(current_dir, args.output)
+    output_dir = join(current_dir, args.output,args.train_dataset.lower()+'_hed')
     if not isdir(output_dir):
         os.makedirs(output_dir)
 
@@ -72,12 +86,18 @@ def main():
     # II. Datasets.
     ################################################
     # Datasets and dataloaders.
-    train_dataset = BsdsDataset(dataset_dir=args.dataset, split='train')
-    test_dataset  = BsdsDataset(dataset_dir=args.dataset, split='test')
-    train_loader  = DataLoader(train_dataset, batch_size=args.train_batch_size,
-                               num_workers=4, drop_last=True, shuffle=True)
-    test_loader   = DataLoader(test_dataset,  batch_size=args.test_batch_size,
-                               num_workers=4, drop_last=False, shuffle=False)
+    if not args.test:
+
+        train_dataset = BsdsDataset(dataset_dir=args.dataset, split='train',args=args)
+        test_dataset  = BsdsDataset(dataset_dir=args.dataset, split='test',args=args)
+        train_loader  = DataLoader(train_dataset, batch_size=args.train_batch_size,
+                                   num_workers=4, drop_last=True, shuffle=True)
+        test_loader   = DataLoader(test_dataset,  batch_size=args.test_batch_size,
+                                   num_workers=4, drop_last=False, shuffle=False)
+    else:
+        test_dataset = BsdsDataset(dataset_dir=args.dataset, split='test', args=args)
+        test_loader = DataLoader(test_dataset, batch_size=args.test_batch_size,
+                                 num_workers=4, drop_last=False, shuffle=False)
 
     ################################################
     # III. Network and optimizer.
@@ -157,7 +177,10 @@ def main():
 
     # Resume the checkpoint.
     if args.checkpoint:
-        load_checkpoint(net, opt, args.checkpoint)  # Omit the returned values.
+        ini =load_checkpoint(net, opt, args.checkpoint, arg=args)  # Omit the returned values.
+        ini = ini+1
+    else:
+        ini = 0
 
     # Resume the HED Caffe model.
     if args.caffe_model:
@@ -166,21 +189,26 @@ def main():
     ################################################
     # V. Training / testing.
     ################################################
-    if args.test is True:
+    if args.test:
         # Only test.
-        test(test_loader, net, save_dir=join(output_dir, 'test'))
+        test(test_loader, net, arg=args)
     else:
         # Train.
         train_epoch_losses = []
-        for epoch in range(args.max_epoch):
+        fig =plt.figure()
+        global_iter = ini*57600 if args.train_dataset.lower()=='ssmihd' else ini*28800
+        for epoch in range(ini,args.max_epoch):
             # Initial test.
-            if epoch == 0:
+            if epoch == 10: # prev 0
                 print('Initial test...')
                 test(test_loader, net, save_dir=join(output_dir, 'initial-test'))
             # Epoch training and test.
-            train_epoch_loss = \
-                train(train_loader, net, opt, lr_schd, epoch, save_dir=join(output_dir, 'epoch-{}-train'.format(epoch)))
+            train_epoch_loss, global_iter = \
+                train(train_loader, net, opt, lr_schd, epoch, save_dir=join(output_dir, \
+                    'epoch-{}-train'.format(epoch)),fig=fig, global_iter=global_iter)
+
             test(test_loader, net, save_dir=join(output_dir, 'epoch-{}-test'.format(epoch)))
+
             # Write log.
             log.flush()
             # Save checkpoint.
@@ -188,9 +216,10 @@ def main():
                             path=os.path.join(output_dir, 'epoch-{}-checkpoint.pt'.format(epoch)))
             # Collect losses.
             train_epoch_losses.append(train_epoch_loss)
+        pt_writer.export_scalars_to_json('data/logs/all_scalars.json')
+        pt_writer.close()
 
-
-def train(train_loader, net, opt, lr_schd, epoch, save_dir):
+def train(train_loader, net, opt, lr_schd, epoch, save_dir,fig,global_iter):
     """ Training procedure. """
     # Create the directory.
     if not isdir(save_dir):
@@ -234,13 +263,43 @@ def train(train_loader, net, opt, lr_schd, epoch, save_dir):
             counter = 0  # Reset the counter.
         # Record loss.
         batch_loss_meter.update(batch_loss.item())
+        pt_writer.add_scalar('data/logs',batch_loss_meter.avg,global_step=global_iter)
         # Log and save intermediate images.
+
+        # visualize results
+        if batch_index%200==0:
+            rgb = images.cpu().numpy()
+            edge = edges.cpu().numpy()
+            pred1 = preds_list[0].cpu().detach().numpy()
+            pred2 = preds_list[1].cpu().detach().numpy()
+            pred3 = preds_list[2].cpu().detach().numpy()
+            pred4 = preds_list[3].cpu().detach().numpy()
+            pred5 = preds_list[4].cpu().detach().numpy()
+            predf = preds_list[5].cpu().detach().numpy()
+            vis_imgs = visualize_result([rgb,edge,pred1,pred2,pred3,pred4,pred5,predf],args)
+            fig.suptitle("Epoch:" + str(batch_index + 1) + " Loss:" + '%.5f' % batch_loss_meter.avg + " training")
+            fig.add_subplot(1,1,1)
+            plt.imshow(vis_imgs)
+            plt.draw()
+            plt.pause(0.01)
+
+        if (batch_index + 1) % 5000 == 0:
+            print('updating visualisation')
+            plt.close()
+            fig = plt.figure()
+        # end result visualization
+
         if batch_index % args.print_freq == args.print_freq - 1:
             # Log.
-            print(('Training epoch:{}/{}, batch:{}/{} current iteration:{}, ' +
-                   'current batch batch_loss:{}, epoch average batch_loss:{}, learning rate list:{}.').format(
-                   epoch, args.max_epoch, batch_index, len(train_loader), lr_schd.last_epoch,
-                   batch_loss_meter.val, batch_loss_meter.avg, lr_schd.get_lr()))
+            print ('Train epoch:[',epoch,'/',args.max_epoch,'batch: [',batch_index,'/',
+                   len(train_loader),'] curr iter: ',lr_schd.last_epoch,' batch_loss: %.5f'%batch_loss_meter.val,
+                   ' epoch avg batch_loss: %.5f'%batch_loss_meter.avg,
+                   ' lr_list: ',lr_schd.get_lr())
+
+            # print(('Training epoch:{}/{}, batch:{}/{} current iteration:{}, ' +
+            #        'current batch batch_loss:{}, epoch average batch_loss:{}, learning rate list:{}.').format(
+            #        epoch, args.max_epoch, batch_index, len(train_loader), lr_schd.last_epoch,
+            #        batch_loss_meter.val, batch_loss_meter.avg, lr_schd.get_lr()))
             # Generate intermediate images.
             preds_list_and_edges = preds_list + [edges]
             _, _, h, w = preds_list_and_edges[0].shape
@@ -250,34 +309,44 @@ def train(train_loader, net, opt, lr_schd, epoch, save_dir):
                 interm_images[i, 0, :, :] = preds_list_and_edges[i][0, 0, :, :]
             # Save the images.
             torchvision.utils.save_image(interm_images, join(save_dir, 'batch-{}-1st-image.png'.format(batch_index)))
+        global_iter +=1
     # Return the epoch average batch_loss.
-    return batch_loss_meter.avg
+    return batch_loss_meter.avg,global_iter
 
 
-def test(test_loader, net, save_dir):
+def test(test_loader, net, arg=None):
     """ Test procedure. """
     # Create the directories.
+    base_dir = arg.output
+    testdata_dir = join('edges',args.model_name+'_'+args.train_dataset+str(2)+args.test_dataset)
+    save_dir = join(base_dir,testdata_dir)
     if not isdir(save_dir):
         os.makedirs(save_dir)
-    save_png_dir = join(save_dir, 'png')
+    save_png_dir = join(save_dir, 'pred')
     if not isdir(save_png_dir):
         os.makedirs(save_png_dir)
-    save_mat_dir = join(save_dir, 'mat')
+    save_mat_dir = join(save_dir, 'pred_mat')
     if not isdir(save_mat_dir):
         os.makedirs(save_mat_dir)
     # Switch to evaluation mode.
     net.eval()
     # Generate predictions and save.
     assert args.test_batch_size == 1  # Currently only support test batch size 1.
-    for batch_index, images in enumerate(tqdm(test_loader)):
-        images = images.cuda()
-        _, _, h, w = images.shape
-        preds_list = net(images)
-        fuse       = preds_list[-1].detach().cpu().numpy()[0, 0]  # Shape: [h, w].
-        name       = test_loader.dataset.images_name[batch_index]
-        sio.savemat(join(save_mat_dir, '{}.mat'.format(name)), {'result': fuse})
-        Image.fromarray((fuse * 255).astype(np.uint8)).save(join(save_png_dir, '{}.png'.format(name)))
-        # print('Test batch {}/{}.'.format(batch_index + 1, len(test_loader)))
+    with torch.no_grad():
+
+        for batch_index, images in enumerate(tqdm(test_loader)):
+            images = images.cuda()
+            _, _, h, w = images.shape
+            preds_list = net(images)
+            fuse       = preds_list[-1].detach().cpu().numpy()[0, 0]  # Shape: [h, w].
+            name       = test_loader.dataset.images_name[batch_index]
+            fuse = np.uint8(image_normalization(fuse))
+            fuse = cv.bitwise_not(fuse)
+            sio.savemat(join(save_mat_dir, '{}.mat'.format(name)), {'result': fuse})
+            Image.fromarray(fuse).save(join(save_png_dir, '{}.png'.format(name)))
+            # Image.fromarray((fuse * 255).astype(np.uint8)).save(join(save_png_dir, '{}.png'.format(name)))
+            # print('Test batch {}/{}.'.format(batch_index + 1, len(test_loader)))
+    print('****** testing Done in dataset: {}'.format(arg.test_dataset))
 
 
 def weighted_cross_entropy_loss(preds, edges):
@@ -299,4 +368,5 @@ def weighted_cross_entropy_loss(preds, edges):
 
 
 if __name__ == '__main__':
-    main()
+    main(args=args)
+
