@@ -45,15 +45,15 @@ parser.add_argument('--lr_gamma',         default=0.1,  type=float, metavar='F',
 parser.add_argument('--momentum',         default=0.9,  type=float, metavar='F', help='Momentum.')
 parser.add_argument('--weight_decay',     default=2e-4, type=float, metavar='F', help='Weight decay.')
 # 4. Files and folders.
-parser.add_argument('--train_list', default='train_pair.lst', type=str)  # SSMIHD: train_rgb_pair.lst
-parser.add_argument('--test_list', default='test_pair.lst', type=str)  # SSMIHD:vis_test.lst
+parser.add_argument('--train_list', default='train_rgb.lst', type=str)  # BIPED: train_rgb_pair.lst
+parser.add_argument('--test_list', default='test_pair.lst', type=str)  # BIPED:vis_test.lst
 parser.add_argument('--vgg16_caffe',      default='data/5stage-vgg.py36pickle',help='Resume VGG-16 Caffe parameters.')
-parser.add_argument('--checkpoint',       default='/opt/results/ssmihd_hed/epoch-22-checkpoint.pt',
-                    help='Resume the checkpoint.') # prev '', curr /opt/results/ssmihd_hed/epoch-22-checkpoint.pt
+parser.add_argument('--checkpoint',       default='epoch-19-checkpoint.pt',
+                    help='Resume the checkpoint.') # prev '', curr /opt/results/BIPED_hed/epoch-22-checkpoint.pt
 parser.add_argument('--caffe_model',      default='',                help='Resume HED Caffe model.')
-parser.add_argument('--output',           default='/opt/results',        help='Output folder.')
-parser.add_argument('--train_dataset',           default='SSMIHD',        help='dataset name')
-parser.add_argument('--test_dataset',           default='DCD',        help='dataset name')
+parser.add_argument('--output',           default='results',        help='Output folder.')
+parser.add_argument('--train_dataset',           default='BIPED',        help='dataset name')
+parser.add_argument('--test_dataset',           default='MULTICUE',        help='dataset name')
 parser.add_argument('--dataset',          default='/opt/dataset', help='HED-BSDS dataset folder.')
 # 5. Others.
 parser.add_argument('--cpu',              default=False,             help='Enable CPU mode.', action='store_true')
@@ -196,19 +196,20 @@ def main(args=None):
         # Train.
         train_epoch_losses = []
         fig =plt.figure()
-        global_iter = ini*57600 if args.train_dataset.lower()=='ssmihd' else ini*28800
+        global_iter = ini*57600 if args.train_dataset.lower()=='biped' else ini*28800
         for epoch in range(ini,args.max_epoch):
             # Initial test.
             if epoch == 10: # prev 0
                 print('Initial test...')
-                test(test_loader, net, save_dir=join(output_dir, 'initial-test'))
+                test(test_loader, net, arg=args)
             # Epoch training and test.
+
+            # test(test_loader, net, save_dir=join(output_dir, 'epoch-{}-test'.format(epoch)))
             train_epoch_loss, global_iter = \
                 train(train_loader, net, opt, lr_schd, epoch, save_dir=join(output_dir, \
                     'epoch-{}-train'.format(epoch)),fig=fig, global_iter=global_iter)
 
-            test(test_loader, net, save_dir=join(output_dir, 'epoch-{}-test'.format(epoch)))
-
+            test(test_loader, net, arg=args)
             # Write log.
             log.flush()
             # Save checkpoint.
